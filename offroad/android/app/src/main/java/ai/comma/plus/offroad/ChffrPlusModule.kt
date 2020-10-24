@@ -20,7 +20,20 @@ import android.net.ConnectivityManager
 import android.net.wifi.WifiInfo
 import android.os.Environment
 import android.os.StatFs
+import android.util.Base64
 import android.util.Log
+import io.jsonwebtoken.Jwts
+import java.io.File
+import java.io.ByteArrayOutputStream
+import java.nio.channels.Channels
+import java.security.GeneralSecurityException
+import java.security.KeyFactory
+import java.security.PrivateKey
+import java.security.spec.InvalidKeySpecException
+import java.security.spec.PKCS8EncodedKeySpec
+import java.util.regex.Pattern
+import org.capnproto.Serialize;
+import ai.comma.openpilot.cereal.Log.UiLayoutState
 
 
 /**
@@ -28,17 +41,18 @@ import android.util.Log
  */
 class ChffrPlusModule(val ctx: ReactApplicationContext) :
         ReactContextBaseJavaModule(ctx),
-        HomeButtonReceiverDelegate,
         NavDestinationPollerDelegate,
-        SettingsClickReceiverDelegate,
         ThermalPollerDelegate {
     val WIFI_STATE_EVENT_NAME = "WIFI_STATE_CHANGED"
     val SIM_STATE_EVENT_NAME = "SIM_STATE_CHANGED"
-
-    private var homeBtnReceiver: HomeButtonReceiver? = null
+    enum class ActivityRequestCode(val code: Int) {
+        WIFI_SETTINGS(0),
+        BLUETOOTH_SETTINGS(1),
+        TETHERING_SETTINGS(2),
+        CELLULAR_SETTINGS(3),
+        DATE_SETTINGS(4)
+    }
     private var networkMonitor: NetworkMonitor? = null
-    private var navDestinationPoller: NavDestinationPoller? = null
-    private var settingsClickReceiver: SettingsClickReceiver? = null
     private var thermalPoller: ThermalPoller? = null
 
     override fun getName(): String = "ChffrPlus"
@@ -46,20 +60,11 @@ class ChffrPlusModule(val ctx: ReactApplicationContext) :
     override fun initialize() {
         super.initialize()
 
-        homeBtnReceiver = HomeButtonReceiver(this)
-        ctx.registerReceiver(homeBtnReceiver, HomeButtonReceiver.pressIntentFilter)
-
-        settingsClickReceiver = SettingsClickReceiver(this)
-        ctx.registerReceiver(settingsClickReceiver, SettingsClickReceiver.pressIntentFilter)
-
         networkMonitor = NetworkMonitor()
         val filter = IntentFilter(WifiManager.NETWORK_STATE_CHANGED_ACTION)
         filter.addAction("android.intent.action.SIM_STATE_CHANGED")
         filter.addAction(ConnectivityManager.CONNECTIVITY_ACTION)
         ctx.registerReceiver(networkMonitor, filter)
-
-        navDestinationPoller = NavDestinationPoller(this)
-        navDestinationPoller!!.start()
 
         thermalPoller = ThermalPoller(this)
         thermalPoller!!.start()
@@ -67,15 +72,11 @@ class ChffrPlusModule(val ctx: ReactApplicationContext) :
 
     override fun onCatalystInstanceDestroy() {
         super.onCatalystInstanceDestroy()
-
-        Log.d("offroad", "catalyst destroyed")
-        ctx.unregisterReceiver(homeBtnReceiver)
         ctx.unregisterReceiver(networkMonitor)
-        ctx.unregisterReceiver(settingsClickReceiver)
-
-        navDestinationPoller!!.stop()
         thermalPoller!!.stop()
     }
+
+
 
     override fun onThermalDataChanged(thermalSample: ThermalSample) {
         ctx.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
@@ -87,21 +88,11 @@ class ChffrPlusModule(val ctx: ReactApplicationContext) :
                 .emit("onDestinationChanged", destination.toWritableMap())
     }
 
-    override fun onHomePress() {
-        ctx.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
-                .emit("onHomePress", WritableNativeMap())
-    }
-
-    override fun onSettingsClicked() {
-        ctx.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
-                .emit("onSettingsClick", WritableNativeMap())
-    }
-
-    private fun startActivityWithIntent(intent: Intent) {
+    private fun startActivityWithIntent(intent: Intent, code: Int) {
         val currentActivity = currentActivity
 
         if (currentActivity != null) {
-            currentActivity.startActivity(intent)
+            currentActivity.startActivityForResult(intent, code)
         } else {
             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             reactApplicationContext.startActivity(intent)
@@ -109,22 +100,15 @@ class ChffrPlusModule(val ctx: ReactApplicationContext) :
     }
 
     @ReactMethod
-    fun sendBroadcast(action: String) {
-        val intent = Intent(action)
-        currentActivity?.sendBroadcast(intent)
-    }
-
-    @ReactMethod
-    fun isNavAvailable(promise: Promise) {
-        val pm = reactApplicationContext.packageManager
-        val packages = pm.getInstalledApplications(PackageManager.GET_META_DATA).map { it.packageName }
-        promise.resolve(packages.contains("com.waze"))
-    }
-
-    @ReactMethod
     fun getImei(promise: Promise) {
-        val tm = getReactApplicationContext().getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager
-        promise.resolve(tm.deviceId);
+        try {
+            val tm = ctx.applicationContext.getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager
+            val imei = tm.getDeviceId(0)
+            promise.resolve(imei)
+        } catch (e: Exception) {
+            CloudLog.exception("BaseUIReactModule.getImei", e)
+            promise.reject("couldn't get imei", e)
+        }
     }
 
     @ReactMethod
@@ -134,6 +118,15 @@ class ChffrPlusModule(val ctx: ReactApplicationContext) :
                 promise.resolve(kbps)
             }
         }, 1000)
+    }
+
+    @ReactMethod
+    fun closeActivites() {
+        ActivityRequestCode.values().forEach {
+            try {
+                currentActivity?.finishActivity(it.code)
+            } catch(e: Exception) {}
+        }
     }
 
     @ReactMethod
@@ -193,14 +186,14 @@ class ChffrPlusModule(val ctx: ReactApplicationContext) :
     fun openWifiSettings() {
         val intent = Intent(WifiManager.ACTION_PICK_WIFI_NETWORK)
         intent.putExtra("extra_prefs_show_button_bar", true)
-        startActivityWithIntent(intent)
+        startActivityWithIntent(intent, ActivityRequestCode.WIFI_SETTINGS.code)
     }
 
     @ReactMethod
     fun openBluetoothSettings() {
         val intent = Intent(Settings.ACTION_BLUETOOTH_SETTINGS)
         intent.putExtra("extra_prefs_show_button_bar", true)
-        startActivityWithIntent(intent)
+        startActivityWithIntent(intent, ActivityRequestCode.BLUETOOTH_SETTINGS.code)
     }
 
     @ReactMethod
@@ -208,33 +201,41 @@ class ChffrPlusModule(val ctx: ReactApplicationContext) :
         val intent = Intent("android.intent.action.MAIN")
         intent.component = ComponentName("com.android.settings", "com.android.settings.TetherSettings")
         intent.putExtra("extra_prefs_show_button_bar", true)
-        startActivityWithIntent(intent)
+        startActivityWithIntent(intent, ActivityRequestCode.TETHERING_SETTINGS.code)
     }
 
     @ReactMethod
     fun openCellularSettings() {
         val intent = Intent(Settings.ACTION_NETWORK_OPERATOR_SETTINGS)
         intent.putExtra("extra_prefs_show_button_bar", true)
-        startActivityWithIntent(intent)
+        startActivityWithIntent(intent, ActivityRequestCode.CELLULAR_SETTINGS.code)
     }
 
     @ReactMethod
     fun openDateTimeSettings() {
         val intent = Intent(Settings.ACTION_DATE_SETTINGS)
         intent.putExtra("extra_prefs_show_button_bar", true)
-        startActivityWithIntent(intent)
+        startActivityWithIntent(intent, ActivityRequestCode.DATE_SETTINGS.code)
     }
 
     @ReactMethod
     fun reboot() {
         try {
-            // IPowerManager.reboot(confirm=false, reason=0, wait=true)
             Runtime.getRuntime().exec(arrayOf("/system/bin/su", "-c", "service call power 16 i32 0 i32 0 i32 1"))
         } catch (e: IOException) {
             CloudLog.exception("BaseUIReactModule.reboot", e)
         }
-
     }
+
+    @ReactMethod
+    fun resetSshKeys() {
+        try {
+            Runtime.getRuntime().exec(arrayOf("/system/bin/su", "-c", "cp /data/data/com.termux/files/home/.ssh/authorized_keys /data/params/d/GithubSshKeys"))
+        } catch (e: IOException) {
+            CloudLog.exception("BaseUIReactModule.resetSshKeys", e)
+        }
+    }
+
 
     @ReactMethod
     fun shutdown() {
@@ -258,6 +259,90 @@ class ChffrPlusModule(val ctx: ReactApplicationContext) :
         val availableBlocks = stat.availableBlocksLong
 
         promise.resolve((availableBlocks * blockSize).toString())
+    }
+
+    @ReactMethod
+    fun getLastRouteName(promise: Promise) {
+        val dataDir = File("/sdcard/realdata/")
+        val files = dataDir.listFiles()
+
+        if (files !== null) {
+          files.sortWith( Comparator { first, second ->
+              first.lastModified().compareTo(second.lastModified())
+          })
+          if (files.size > 0) {
+              val dongleId = ChffrPlusParams.readParam("DongleId")
+              val timeParts = files.last().name.split("--").toList()
+              val timeStr = timeParts.dropLast(1).joinToString("--")
+              promise.resolve("${dongleId}|${timeStr}")
+          } else {
+              promise.resolve(null)
+          }
+        } else {
+            promise.resolve(null)
+        }
+    }
+
+    @Throws(GeneralSecurityException::class)
+    private fun readPkcs1PrivateKey(pkcs1Bytes: ByteArray): PrivateKey {
+        // We can't use Java internal APIs to parse ASN.1 structures, so we build a PKCS#8 key Java can understand
+        val pkcs1Length = pkcs1Bytes.size
+        val totalLength = pkcs1Length + 22
+        val pkcs8Header = byteArrayOf(0x30, 0x82.toByte(), (totalLength shr 8 and 0xff).toByte(), (totalLength and 0xff).toByte(), // Sequence + total length
+                0x2, 0x1, 0x0, // Integer (0)
+                0x30, 0xD, 0x6, 0x9, 0x2A, 0x86.toByte(), 0x48, 0x86.toByte(), 0xF7.toByte(), 0xD, 0x1, 0x1, 0x1, 0x5, 0x0, // Sequence: 1.2.840.113549.1.1.1, NULL
+                0x4, 0x82.toByte(), (pkcs1Length shr 8 and 0xff).toByte(), (pkcs1Length and 0xff).toByte() // Octet string + length
+        )
+        val pkcs8bytes = join(pkcs8Header, pkcs1Bytes)
+        return readPkcs8PrivateKey(pkcs8bytes)
+    }
+
+    private fun join(byteArray1: ByteArray, byteArray2: ByteArray): ByteArray {
+        val bytes = ByteArray(byteArray1.size + byteArray2.size)
+        System.arraycopy(byteArray1, 0, bytes, 0, byteArray1.size)
+        System.arraycopy(byteArray2, 0, bytes, byteArray1.size, byteArray2.size)
+        return bytes
+    }
+
+    @Throws(GeneralSecurityException::class)
+    private fun readPkcs8PrivateKey(pkcs8Bytes: ByteArray): PrivateKey {
+        val keyFactory = KeyFactory.getInstance("RSA")
+        val keySpec = PKCS8EncodedKeySpec(pkcs8Bytes)
+        try {
+            return keyFactory.generatePrivate(keySpec)
+        } catch (e: InvalidKeySpecException) {
+            throw IllegalArgumentException("Unexpected key format!", e)
+        }
+
+    }
+
+    @ReactMethod
+    fun createJwt(claims: ReadableMap, promise: Promise) {
+        val keyText = File("/persist/comma/id_rsa").readText()
+
+        // strip header, footer, and whitespace
+        var keyHex = keyText.replace("-----BEGIN RSA PRIVATE KEY-----", "")
+                .replace("-----END RSA PRIVATE KEY-----", "")
+        keyHex = Pattern.compile("\\s+").matcher(keyHex).replaceAll("")
+        val keyBytes = Base64.decode(keyHex, Base64.DEFAULT)
+
+        val now = (System.currentTimeMillis() / 1000).toInt()
+        val expTime = now + 3600
+        try {
+            val key = readPkcs1PrivateKey(keyBytes)
+            val token = Jwts.builder()
+                    .claim("exp", expTime)
+                    .claim("iat", now)
+                    .claim("nbf", now)
+                    .addClaims(claims.toHashMap())
+                    .signWith(key)
+                    .compact()
+
+            promise.resolve(token)
+        } catch (e: InvalidKeySpecException) {
+            CloudLog.exception("createPairToken: Invalid private key", e)
+            promise.reject(e)
+        }
     }
 
     fun getWifiStateMap(wifiInfo: WifiInfo? = null, networkInfo: NetworkInfo? = null): ReadableNativeMap {

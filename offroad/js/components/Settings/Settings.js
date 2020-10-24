@@ -1,12 +1,21 @@
 import React, { Component } from 'react';
-import { View, ScrollView, Alert } from 'react-native';
+import {
+    ActivityIndicator,
+    Alert,
+    ScrollView,
+    TextInput,
+    View,
+} from 'react-native';
 import { NavigationActions } from 'react-navigation';
 import { connect } from 'react-redux';
 
 import ChffrPlus from '../../native/ChffrPlus';
+import Layout from '../../native/Layout';
+import UploadProgressTimer from '../../timers/UploadProgressTimer';
 import { formatSize } from '../../utils/bytes';
 import { mpsToKph, mpsToMph, kphToMps, mphToMps } from '../../utils/conversions';
 import { Params } from '../../config';
+import { resetToLaunch } from '../../store/nav/actions';
 
 import {
     updateSshEnabled,
@@ -14,6 +23,7 @@ import {
 import {
     deleteParam,
     updateParam,
+    refreshParams,
 } from '../../store/params/actions';
 
 import X from '../../themes';
@@ -31,7 +41,6 @@ const Icons = {
     user: require('../../img/icon_user.png'),
     developer: require('../../img/icon_shell.png'),
     warning: require('../../img/icon_warning.png'),
-    monitoring: require('../../img/icon_monitoring.png'),
     metric: require('../../img/icon_metric.png'),
     network: require('../../img/icon_network.png'),
     eon: require('../../img/icon_eon.png'),
@@ -40,6 +49,10 @@ const Icons = {
     plus: require('../../img/icon_plus.png'),
     minus: require('../../img/icon_minus.png'),
     mapSpeed: require('../../img/icon_map.png'),
+    openpilot: require('../../img/icon_openpilot.png'),
+    openpilot_mirrored: require('../../img/icon_openpilot_mirrored.png'),
+    monitoring: require('../../img/icon_monitoring.png'),
+    road: require('../../img/icon_road.png'),
 }
 
 class Settings extends Component {
@@ -59,10 +72,17 @@ class Settings extends Component {
                 gitRevision: null,
             },
             speedLimitOffsetInt: '0',
+            githubUsername: '',
+            authKeysUpdateState: null,
         }
+
+        this.writeSshKeys = this.writeSshKeys.bind(this);
+        this.toggleExpandGithubInput = this.toggleExpandGithubInput.bind(this);
     }
 
     async componentWillMount() {
+        UploadProgressTimer.start(this.props.dispatch);
+        await this.props.refreshParams();
         const {
             isMetric,
             params: {
@@ -77,6 +97,11 @@ class Settings extends Component {
         }
     }
 
+    async componentWillUnmount() {
+        await Layout.emitSidebarExpanded();
+        UploadProgressTimer.stop();
+    }
+
     handleExpanded(key) {
         const { expandedCell } = this.state;
         return this.setState({
@@ -87,8 +112,7 @@ class Settings extends Component {
     handlePressedBack() {
         const { route } = this.state;
         if (route == SettingsRoutes.PRIMARY) {
-            ChffrPlus.sendBroadcast("ai.comma.plus.offroad.NAVIGATED_FROM_SETTINGS");
-            this.props.navigateHome();
+            this.props.goBack();
         } else {
             this.handleNavigatedFromMenu(SettingsRoutes.PRIMARY);
         }
@@ -97,15 +121,12 @@ class Settings extends Component {
     handleNavigatedFromMenu(route) {
         this.setState({ route: route })
         this.refs.settingsScrollView.scrollTo({ x: 0, y: 0, animated: false })
+        this.props.refreshParams();
     }
 
     handlePressedResetCalibration = async () => {
         this.props.deleteParam(Params.KEY_CALIBRATION_PARAMS);
-        this.setState({ calibration: null });
-        Alert.alert('Reboot', 'Resetting calibration requires a reboot.', [
-            { text: 'Later', onPress: () => {}, style: 'cancel' },
-            { text: 'Reboot Now', onPress: () => ChffrPlus.reboot() },
-        ]);
+        this.props.deleteParam(Params.KEY_LIVE_PARAMETERS);
     }
 
     // handleChangedSpeedLimitOffset(operator) {
@@ -159,7 +180,7 @@ class Settings extends Component {
                 Version: version,
             },
         } = this.props;
-        const software = !!parseInt(isPassive) ? 'chffrplus' : 'openpilot';
+        const software = !!parseInt(isPassive) ? 'dashcam' : 'openpilot';
         let connectivity = 'Disconnected'
         if (wifiState.isConnected && wifiState.ssid) {
             connectivity = wifiState.ssid;
@@ -176,12 +197,12 @@ class Settings extends Component {
             {
                 icon: Icons.eon,
                 title: 'Device',
-                context: `${ parseInt(freeSpace * 100) + '%' } Free`,
+                context: `${ parseInt(freeSpace) + '%' } Free`,
                 route: SettingsRoutes.DEVICE,
             },
             {
                 icon: Icons.network,
-                title: 'Network',
+                title: 'WiFi',
                 context: connectivity,
                 route: SettingsRoutes.NETWORK,
             },
@@ -230,14 +251,17 @@ class Settings extends Component {
     renderPrimarySettings() {
         const {
             params: {
-                IsDriverMonitoringEnabled: isDriverMonitoringEnabled,
                 RecordFront: recordFront,
-                IsFcwEnabled: isFcwEnabled,
+                IsRHD: isRHD,
                 IsMetric: isMetric,
                 LongitudinalControl: hasLongitudinalControl,
                 LimitSetSpeed: limitSetSpeed,
                 SpeedLimitOffset: speedLimitOffset,
-            }
+                OpenpilotEnabledToggle: openpilotEnabled,
+                Passive: isPassive,
+                IsLdwEnabled: isLaneDepartureWarningEnabled,
+                LaneChangeEnabled: laneChangeEnabled,
+            },
         } = this.props;
         const { expandedCell, speedLimitOffsetInt } = this.state;
         return (
@@ -257,39 +281,61 @@ class Settings extends Component {
                         { this.renderSettingsMenu() }
                     </X.Table>
                     <X.Table color='darkBlue'>
+                        { !parseInt(isPassive) ? (
+                            <X.TableCell
+                                type='switch'
+                                title='Enable openpilot'
+                                value={ !!parseInt(openpilotEnabled) }
+                                iconSource={ Icons.openpilot }
+                                description='Use the openpilot system for adaptive cruise control and lane keep driver assistance. Your attention is required at all times to use this feature. Changing this setting takes effect when the car is powered off.'
+                                isExpanded={ expandedCell == 'openpilot_enabled' }
+                                handleExpanded={ () => this.handleExpanded('openpilot_enabled') }
+                                handleChanged={ this.props.setOpenpilotEnabled } />
+                        ) : null }
+                        { !parseInt(isPassive) ? (
+                            <X.TableCell
+                                type='switch'
+                                title='Enable Lane Change Assist'
+                                value={ !!parseInt(laneChangeEnabled) }
+                                iconSource={ Icons.road }
+                                description='Perform assisted lane changes with openpilot by checking your surroundings for safety, activating the turn signal and gently nudging the steering wheel towards your desired lane. openpilot is not capable of checking if a lane change is safe. You must continuously observe your surroundings to use this feature.'
+                                isExpanded={ expandedCell == 'lanechange_enabled' }
+                                handleExpanded={ () => this.handleExpanded('lanechange_enabled') }
+                                handleChanged={ this.props.setLaneChangeEnabled } />
+                        ) : null }
                         <X.TableCell
                             type='switch'
-                            title='Enable Driver Monitoring'
-                            value={ !!parseInt(isDriverMonitoringEnabled) }
-                            iconSource={ Icons.monitoring }
-                            description='Driver Monitoring detects driver awareness with 3D facial reconstruction and pose estimation. It is used to warn the driver when they appear distracted while openpilot is engaged. This feature is still in beta, so Driver Monitoring is unavailable when the facial tracking is too inaccurate (e.g. at night). The availability is indicated by the face icon at the bottom-left corner of your EON.'
-                            isExpanded={ expandedCell == 'driver_monitoring' }
-                            handleExpanded={ () => this.handleExpanded('driver_monitoring') }
-                            handleChanged={ this.props.setDriverMonitoringEnabled } />
+                            title='Enable Lane Departure Warnings'
+                            value={ !!parseInt(isLaneDepartureWarningEnabled) }
+                            iconSource={ Icons.warning }
+                            description='Receive alerts to steer back into the lane when your vehicle drifts over a detected lane line without a turn signal activated while driving over 31mph (50kph).'
+                            isExpanded={ expandedCell == 'ldw' }
+                            handleExpanded={ () => this.handleExpanded('ldw') }
+                            handleChanged={ this.props.setLaneDepartureWarningEnabled } />
                         <X.TableCell
                             type='switch'
                             title='Record and Upload Driver Camera'
                             value={ !!parseInt(recordFront) }
                             iconSource={ Icons.network }
-                            description='Upload data from the driver facing camera and help improve the Driver Monitoring algorithm.'
+                            description='Upload data from the driver facing camera and help improve the driver monitoring algorithm.'
                             isExpanded={ expandedCell == 'record_front' }
                             handleExpanded={ () => this.handleExpanded('record_front') }
                             handleChanged={ this.props.setRecordFront } />
                         <X.TableCell
                             type='switch'
-                            title='Enable Forward Collision Warning'
-                            value={ !!parseInt(isFcwEnabled) }
-                            iconSource={ Icons.warning }
-                            description='Use visual and acoustic warnings when risk of forward collision is detected.'
-                            isExpanded={ expandedCell == 'fcw' }
-                            handleExpanded={ () => this.handleExpanded('fcw') }
-                            handleChanged={ this.props.setFcwEnabled } />
+                            title='Enable Right-Hand Drive'
+                            value={ !!parseInt(isRHD) }
+                            iconSource={ Icons.openpilot_mirrored }
+                            description='Allow openpilot to obey left-hand traffic conventions and perform driver monitoring on right driver seat.'
+                            isExpanded={ expandedCell == 'is_rhd' }
+                            handleExpanded={ () => this.handleExpanded('is_rhd') }
+                            handleChanged={ this.props.setIsRHD } />
                         <X.TableCell
                             type='switch'
                             title='Use Metric System'
                             value={ !!parseInt(isMetric) }
                             iconSource={ Icons.metric }
-                            description='Display speed in km/h instead of mp/h and temperature in °C instead of °F.'
+                            description='Display speed in km/h instead of mp/h.'
                             isExpanded={ expandedCell == 'metric' }
                             handleExpanded={ () => this.handleExpanded('metric') }
                             handleChanged={ this.props.setMetric } />
@@ -349,21 +395,6 @@ class Settings extends Component {
                             Review Training Guide
                         </X.Button>
                     </X.Table>
-                    <X.Table color='darkBlue'>
-                        <X.Button
-                            size='small'
-                            color='settingsDefault'
-                            onPress={ () => this.props.reboot() }>
-                            Reboot
-                        </X.Button>
-                        <X.Line color='transparent' size='tiny' spacing='mini' />
-                        <X.Button
-                            size='small'
-                            color='settingsDefault'
-                            onPress={ () => this.props.shutdown() }>
-                            Power Off
-                        </X.Button>
-                    </X.Table>
                 </ScrollView>
             </View>
         )
@@ -390,11 +421,61 @@ class Settings extends Component {
                             <X.TableCell
                                 title='Device Paired'
                                 value={ isPaired ? 'Yes' : 'No' } />
+                            { isPaired ? (
+                                <X.Text
+                                    color='white'
+                                    size='tiny'>
+                                    You may unpair your device in the comma connect app settings.
+                                </X.Text>
+                            ) : null }
+                            <X.Line color='light' />
+                            <X.Text
+                                color='white'
+                                size='tiny'>
+                                Terms of Service available at {'https://my.comma.ai/terms.html'}
+                            </X.Text>
                         </X.Table>
+                        { isPaired ? null : (
+                            <X.Table color='darkBlue' padding='big'>
+                                <X.Button
+                                    color='settingsDefault'
+                                    size='small'
+                                    onPress={ this.props.openPairing }>
+                                    Pair Device
+                                </X.Button>
+                            </X.Table>
+                        ) }
                     </View>
                 </ScrollView>
             </View>
         )
+    }
+
+    calib_description(params){
+      var text = 'openpilot requires the device to be mounted within 4° left or right and within 5° up or down. openpilot is continuously calibrating, resetting is rarely required.';
+      if ((params == null) || (params == undefined)) {
+        var calib_json = null
+      } else {
+        var calib_json = JSON.parse(params);
+      }
+      if ((calib_json != null) && (calib_json.hasOwnProperty('calib_radians'))) {
+        var calibArr = (calib_json.calib_radians).toString().split(',');
+        var pi = Math.PI;
+        var pitch = parseFloat(calibArr[1]) * (180/pi)
+        var yaw = parseFloat(calibArr[2]) * (180/pi)
+        if (pitch > 0) {
+          var pitch_str = Math.abs(pitch).toFixed(1).concat('° up')
+        } else {
+          var pitch_str = Math.abs(pitch).toFixed(1).concat('° down')
+        }
+        if (yaw > 0) {
+          var yaw_str = Math.abs(yaw).toFixed(1).concat('° right')
+        } else {
+          var yaw_str = Math.abs(yaw).toFixed(1).concat('° left')
+        }
+        text = text.concat('\n\nYour device is pointed ', pitch_str, ' and ', yaw_str, '. ')
+      }
+      return text;
     }
 
     renderDeviceSettings() {
@@ -410,9 +491,11 @@ class Settings extends Component {
             params: {
                 DongleId: dongleId,
                 Passive: isPassive,
+                CalibrationParams: calibrationParams,
             },
+            isOffroad,
         } = this.props;
-        const software = !!parseInt(isPassive) ? 'chffrplus' : 'openpilot';
+        const software = !!parseInt(isPassive) ? 'dashcam' : 'openpilot';
         return (
             <View style={ Styles.settings }>
                 <View style={ Styles.settingsHeader }>
@@ -431,7 +514,7 @@ class Settings extends Component {
                             type='custom'
                             title='Camera Calibration'
                             iconSource={ Icons.calibration }
-                            description='The calibration algorithm is always active on the road facing camera. Resetting calibration is only advised when EON reports an invalid calibration alert or when EON is remounted in a different position.'
+                            description={ this.calib_description(calibrationParams) }
                             isExpanded={ expandedCell == 'calibration' }
                             handleExpanded={ () => this.handleExpanded('calibration') }>
                             <X.Button
@@ -440,6 +523,24 @@ class Settings extends Component {
                                 onPress={ this.handlePressedResetCalibration  }
                                 style={ { minWidth: '100%' } }>
                                 Reset
+                            </X.Button>
+                        </X.TableCell>
+                    </X.Table>
+                    <X.Table color='darkBlue'>
+                        <X.TableCell
+                            type='custom'
+                            title='Driver Camera View'
+                            iconSource={ Icons.monitoring }
+                            description='Preview the driver facing camera to help optimize device mounting position for best driver monitoring experience. (offroad use only)'
+                            isExpanded={ expandedCell == 'driver_view_enabled' }
+                            handleExpanded={ () => this.handleExpanded('driver_view_enabled') } >
+                            <X.Button
+                                size='tiny'
+                                color='settingsDefault'
+                                isDisabled={ !isOffroad }
+                                onPress={ this.props.setIsDriverViewEnabled  }
+                                style={ { minWidth: '100%' } }>
+                                Preview
                             </X.Button>
                         </X.TableCell>
                     </X.Table>
@@ -455,19 +556,26 @@ class Settings extends Component {
                             value={ serialNumber } />
                         <X.TableCell
                             title='Free Storage'
-                            value={ parseInt(freeSpace * 100) + '%' }
+                            value={ parseInt(freeSpace) + '%' }
                              />
                         <X.TableCell
                             title='Upload Speed'
                             value={ txSpeedKbps + ' kbps' }
                              />
                     </X.Table>
-                    <X.Table color='darkBlue' padding='big'>
+                    <X.Table color='darkBlue'>
                         <X.Button
-                            color='settingsDefault'
                             size='small'
-                            onPress={ () => ChffrPlus.openDateTimeSettings() }>
-                            Open Date and Time Settings
+                            color='settingsDefault'
+                            onPress={ () => this.props.reboot() }>
+                            Reboot
+                        </X.Button>
+                        <X.Line color='transparent' size='tiny' spacing='mini' />
+                        <X.Button
+                            size='small'
+                            color='settingsDefault'
+                            onPress={ () => this.props.shutdown() }>
+                            Power Off
                         </X.Button>
                     </X.Table>
                 </ScrollView>
@@ -476,11 +584,6 @@ class Settings extends Component {
     }
 
     renderNetworkSettings() {
-        const {
-          params: {
-            IsUploadVideoOverCellularEnabled: isCellularUploadEnabled,
-          },
-        } = this.props;
         const { expandedCell } = this.state;
         return (
             <View style={ Styles.settings }>
@@ -496,36 +599,18 @@ class Settings extends Component {
                     ref="settingsScrollView"
                     style={ Styles.settingsWindow }>
                     <X.Line color='transparent' spacing='tiny' />
-                    <X.Table color='darkBlue'>
-                        <X.TableCell
-                            type='switch'
-                            title='Enable Upload Over Cellular'
-                            value={ !!parseInt(isCellularUploadEnabled) }
-                            iconSource={ Icons.network }
-                            description='Upload driving data over cellular connection if a sim card is used and no wifi network is available. If you have a limited data plan, you might incur in surcharges.'
-                            isExpanded={ expandedCell == 'cellular_enabled' }
-                            handleExpanded={ () => this.handleExpanded('cellular_enabled') }
-                            handleChanged={ this.props.setCellularEnabled } />
-                    </X.Table>
                     <X.Table spacing='big' color='darkBlue'>
                         <X.Button
                             size='small'
                             color='settingsDefault'
-                            onPress={ () => ChffrPlus.openWifiSettings() }>
+                            onPress={ this.props.openWifiSettings }>
                             Open WiFi Settings
                         </X.Button>
                         <X.Line color='transparent' size='tiny' spacing='mini' />
                         <X.Button
                             size='small'
                             color='settingsDefault'
-                            onPress={ () => ChffrPlus.openBluetoothSettings() }>
-                            Open Bluetooth Settings
-                        </X.Button>
-                        <X.Line color='transparent' size='tiny' spacing='mini' />
-                        <X.Button
-                            size='small'
-                            color='settingsDefault'
-                            onPress={ () => ChffrPlus.openTetheringSettings() }>
+                            onPress={ this.props.openTetheringSettings }>
                             Open Tethering Settings
                         </X.Button>
                     </X.Table>
@@ -542,10 +627,13 @@ class Settings extends Component {
                 GitBranch: gitBranch,
                 GitCommit: gitRevision,
                 Passive: isPassive,
+                PandaFirmwareHex: pandaFirmwareHex,
+                PandaDongleId: pandaDongleId,
+                CommunityFeaturesToggle: communityFeatures,
             },
         } = this.props;
         const { expandedCell } = this.state;
-        const software = !!parseInt(isPassive) ? 'chffrplus' : 'openpilot';
+        const software = !!parseInt(isPassive) ? 'dashcam' : 'openpilot';
         return (
             <View style={ Styles.settings }>
                 <View style={ Styles.settingsHeader }>
@@ -559,6 +647,45 @@ class Settings extends Component {
                 <ScrollView
                     ref="settingsScrollView"
                     style={ Styles.settingsWindow }>
+                    <X.Table color='darkBlue'>
+                        <X.TableCell
+                            type='switch'
+                            title='Enable Community Features'
+                            value={ !!parseInt(communityFeatures) }
+                            iconSource={ Icons.developer }
+                            descriptionExtra={
+                              <X.Text color='white' size='tiny'>
+                                  Use features from the open source community that are not maintained or supported by comma.ai and have not been confirmed to meet the standard safety model. These features include community supported cars and community supported hardware. Be extra cautious when using these features.{'\n'}
+                              </X.Text>
+                            }
+                            isExpanded={ expandedCell == 'communityFeatures' }
+                            handleExpanded={ () => this.handleExpanded('communityFeatures') }
+                            handleChanged={ this.props.setCommunityFeatures } />
+                        <X.TableCell
+                            type='switch'
+                            title='Enable SSH'
+                            value={ isSshEnabled }
+                            iconSource={ Icons.developer }
+                            description='Allow devices to connect to your device using Secure Shell (SSH).'
+                            isExpanded={ expandedCell == 'ssh' }
+                            handleExpanded={ () => this.handleExpanded('ssh') }
+                            handleChanged={ this.props.setSshEnabled } />
+                        <X.TableCell
+                            iconSource={ Icons.developer }
+                            title='Authorized SSH Keys'
+                            descriptionExtra={ this.renderSshInput() }
+                            isExpanded={ expandedCell === 'ssh_keys' }
+                            handleExpanded={ this.toggleExpandGithubInput }
+                            type='custom'>
+                            <X.Button
+                                size='tiny'
+                                color='settingsDefault'
+                                onPress={ this.toggleExpandGithubInput }
+                                style={ { minWidth: '100%' } }>
+                                { expandedCell === 'ssh_keys' ? 'Cancel' : 'Edit' }
+                            </X.Button>
+                        </X.TableCell>
+                    </X.Table>
                     <X.Table spacing='none'>
                         <X.TableCell
                             title='Version'
@@ -570,17 +697,14 @@ class Settings extends Component {
                             title='Git Revision'
                             value={ gitRevision.slice(0, 12) }
                             valueTextSize='tiny' />
-                    </X.Table>
-                    <X.Table color='darkBlue'>
                         <X.TableCell
-                            type='switch'
-                            title='Enable SSH'
-                            value={ isSshEnabled }
-                            iconSource={ Icons.developer }
-                            description='Allow devices to connect to your EON using Secure Shell (SSH).'
-                            isExpanded={ expandedCell == 'ssh' }
-                            handleExpanded={ () => this.handleExpanded('ssh') }
-                            handleChanged={ this.props.setSshEnabled } />
+                            title='Panda Firmware'
+                            value={ pandaFirmwareHex != null ? pandaFirmwareHex : 'N/A' }
+                            valueTextSize='tiny' />
+                        <X.TableCell
+                            title='Panda Dongle ID'
+                            value={ (pandaDongleId != null && pandaDongleId != "unprovisioned") ? pandaDongleId : 'N/A' }
+                            valueTextSize='tiny' />
                     </X.Table>
                     <X.Table color='darkBlue' padding='big'>
                         <X.Button
@@ -593,6 +717,107 @@ class Settings extends Component {
                 </ScrollView>
             </View>
         )
+    }
+
+    renderSshInput() {
+        let { githubUsername, authKeysUpdateState } = this.state;
+        let githubUsernameIsValid = githubUsername.match(/[a-zA-Z0-9-]+/) !== null;
+
+        return (
+            <View>
+                <X.Text color='white' size='tiny'>
+                    WARNING:
+                    {'\n'}
+                    This grants SSH access to all public keys in your GitHub settings.
+                    {'\n'}
+                    Never enter a GitHub username other than your own.
+                    {'\n'}
+                    The built-in SSH key will be disabled if you proceed.
+                    {'\n'}
+                    A comma employee will never ask you to add their GitHub.
+                    {'\n'}
+                </X.Text>
+                <View style={ Styles.githubUsernameInputContainer }>
+                    <X.Text
+                        color='white'
+                        weight='semibold'
+                        size='small'
+                        style={ Styles.githubUsernameInputLabel }>
+                        GitHub Username
+                    </X.Text>
+                    <TextInput
+                        style={ Styles.githubUsernameInput }
+                        onChangeText={ (text) => this.setState({ githubUsername: text, authKeysUpdateState: null })}
+                        onFocus={ () => Layout.emitSidebarCollapsed() }
+                        onBlur={ () => Layout.emitSidebarExpanded() }
+                        value={ githubUsername }
+                        ref={ ref => this.githubInput = ref }
+                        underlineColorAndroid='transparent'
+                    />
+                </View>
+                <View>
+                    <X.Button
+                        size='tiny'
+                        color='settingsDefault'
+                        isDisabled={ !githubUsernameIsValid }
+                        onPress={ this.writeSshKeys }
+                        style={ Styles.githubUsernameSaveButton }>
+                        <X.Text color='white' size='small' style={ Styles.githubUsernameInputSave }>Save</X.Text>
+                    </X.Button>
+                    { authKeysUpdateState !== null &&
+                        <View style={ Styles.githubUsernameInputStatus }>
+                            { authKeysUpdateState === 'inflight' &&
+                                <ActivityIndicator
+                                    color='white'
+                                    refreshing={ true }
+                                    size={ 37 }
+                                    style={ Styles.connectingIndicator } />
+                            }
+                            { authKeysUpdateState === 'failed' &&
+                                <X.Text color='white' size='tiny'>Save failed. Ensure that your username is correct and you are connected to the internet.</X.Text>
+                            }
+                        </View>
+                    }
+                    <View style={ Styles.githubSshKeyClearContainer }>
+                        <X.Button
+                            size='tiny'
+                            color='settingsDefault'
+                            onPress={ this.clearSshKeys }
+                            style={ Styles.githubUsernameSaveButton }>
+                            <X.Text color='white' size='small' style={ Styles.githubUsernameInputSave }>Remove all</X.Text>
+                        </X.Button>
+                    </View>
+                </View>
+            </View>
+        );
+    }
+
+    toggleExpandGithubInput() {
+        this.setState({ authKeysUpdateState: null });
+        this.handleExpanded('ssh_keys');
+    }
+
+    clearSshKeys() {
+        ChffrPlus.resetSshKeys();
+    }
+
+    async writeSshKeys() {
+        let { githubUsername } = this.state;
+
+        try {
+            this.setState({ authKeysUpdateState: 'inflight' })
+            const resp = await fetch(`https://github.com/${githubUsername}.keys`);
+            const githubKeys = (await resp.text());
+            if (resp.status !== 200) {
+                throw new Error('Non-200 response code from GitHub');
+            }
+
+            await ChffrPlus.writeParam(Params.KEY_GITHUB_SSH_KEYS, githubKeys);
+            this.toggleExpandGithubInput();
+        } catch(err) {
+            console.log(err);
+            this.setState({ authKeysUpdateState: 'failed' });
+        }
     }
 
     renderSettingsByRoute() {
@@ -626,7 +851,7 @@ const mapStateToProps = state => ({
     simState: state.host.simState,
     wifiState: state.host.wifiState,
     isPaired: state.host.device && state.host.device.is_paired,
-    isUpdateAvailable: state.updater.isUpdateAvailable,
+    isOffroad: state.host.isOffroad,
 
     // Uploader
     txSpeedKbps: parseInt(state.uploads.txSpeedKbps),
@@ -636,14 +861,21 @@ const mapStateToProps = state => ({
 });
 
 const mapDispatchToProps = dispatch => ({
-    navigateHome: async () => {
-        dispatch(NavigationActions.reset({
-            index: 0,
-            key: null,
-            actions: [
-                NavigationActions.navigate({ routeName: 'Home' })
-            ]
-        }));
+    dispatch,
+    goBack: async () => {
+        await dispatch(resetToLaunch());
+        await Layout.goBack();
+    },
+    openPairing: () => {
+        dispatch(NavigationActions.navigate({ routeName: 'SetupQr' }));
+    },
+    openWifiSettings: async () => {
+        await dispatch(NavigationActions.navigate({ routeName: 'SettingsWifi' }));
+        Layout.emitSidebarCollapsed();
+    },
+    openTetheringSettings: async () => {
+        Layout.emitSidebarCollapsed();
+        ChffrPlus.openTetheringSettings();
     },
     reboot: () => {
         Alert.alert('Reboot', 'Are you sure you want to reboot?', [
@@ -672,12 +904,8 @@ const mapDispatchToProps = dispatch => ({
             ]
         }))
     },
-    setDriverMonitoringEnabled: (isDriverMonitoringEnabled) => {
-        const value = (isDriverMonitoringEnabled | 0).toString();
-        dispatch(updateParam(Params.KEY_IS_DRIVER_MONITORING_ENABLED, value));
-    },
-    setFcwEnabled: (isFcwEnabled) => {
-        dispatch(updateParam(Params.KEY_IS_FCW_ENABLED, (isFcwEnabled | 0).toString()));
+    setOpenpilotEnabled: (openpilotEnabled) => {
+        dispatch(updateParam(Params.KEY_OPENPILOT_ENABLED, (openpilotEnabled | 0).toString()));
     },
     setMetric: (useMetricUnits) => {
         dispatch(updateParam(Params.KEY_IS_METRIC, (useMetricUnits | 0).toString()));
@@ -685,8 +913,11 @@ const mapDispatchToProps = dispatch => ({
     setRecordFront: (recordFront) => {
         dispatch(updateParam(Params.KEY_RECORD_FRONT, (recordFront | 0).toString()));
     },
-    setCellularEnabled: (useCellular) => {
-        dispatch(updateParam(Params.KEY_UPLOAD_CELLULAR, (useCellular | 0).toString()));
+    setIsRHD: (isRHD) => {
+        dispatch(updateParam(Params.KEY_IS_RHD, (isRHD | 0).toString()));
+    },
+    setIsDriverViewEnabled: (isDriverViewEnabled) => {
+        dispatch(updateParam(Params.KEY_IS_DRIVER_VIEW_ENABLED, (isDriverViewEnabled | 1).toString()));
     },
     setSshEnabled: (isSshEnabled) => {
         dispatch(updateSshEnabled(!!isSshEnabled));
@@ -700,8 +931,29 @@ const mapDispatchToProps = dispatch => ({
     setSpeedLimitOffset: (speedLimitOffset) => {
         dispatch(updateParam(Params.KEY_SPEED_LIMIT_OFFSET, (speedLimitOffset).toString()));
     },
+    setCommunityFeatures: (communityFeatures) => {
+        if (communityFeatures == 1) {
+            Alert.alert('Enable Community Features', 'Community maintained features are not confirmed by comma.ai to meet the standard safety model. Be extra cautious using them.', [
+                { text: 'Cancel', onPress: () => {}, style: 'cancel' },
+                { text: 'Enable', onPress: () => {
+                    dispatch(updateParam(Params.KEY_COMMUNITY_FEATURES, (communityFeatures | 0).toString()));
+                } },
+            ]);
+        } else {
+            dispatch(updateParam(Params.KEY_COMMUNITY_FEATURES, (communityFeatures | 0).toString()));
+        }
+    },
+    setLaneDepartureWarningEnabled: (isLaneDepartureWarningEnabled) => {
+        dispatch(updateParam(Params.KEY_LANE_DEPARTURE_WARNING_ENABLED, (isLaneDepartureWarningEnabled | 0).toString()));
+    },
+    setLaneChangeEnabled: (laneChangeEnabled) => {
+        dispatch(updateParam(Params.KEY_LANE_CHANGE_ENABLED, (laneChangeEnabled | 0).toString()));
+    },
     deleteParam: (param) => {
         dispatch(deleteParam(param));
+    },
+    refreshParams: () => {
+        dispatch(refreshParams());
     },
 });
 

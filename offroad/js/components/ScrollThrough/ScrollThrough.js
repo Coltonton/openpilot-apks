@@ -15,12 +15,7 @@ export default class ScrollThrough extends Component {
         primaryButtonTextDisabled: PropTypes.string,
         secondaryButtonText: PropTypes.string.isRequired,
         onScroll: PropTypes.func,
-        primaryButtonEnabled: PropTypes.bool,
-    };
-
-    static defaultProps = {
-        primaryButtonEnabled: true,
-
+        enabled: PropTypes.bool,
     };
 
     constructor(props) {
@@ -28,6 +23,7 @@ export default class ScrollThrough extends Component {
 
         this.state = {
             isAtBottom: false,
+            reachedBottom: false,
         };
     }
 
@@ -36,7 +32,9 @@ export default class ScrollThrough extends Component {
         if (this.state.isAtBottom !== isAtBottom) {
             this.setState({ isAtBottom });
         }
-
+        if (!this.state.reachedBottom) {
+            this.setState({ reachedBottom: isAtBottom });
+        }
         if (this.props.onScroll) {
             this.props.onScroll({ nativeEvent });
         }
@@ -53,19 +51,20 @@ export default class ScrollThrough extends Component {
             secondaryButtonText,
             onPrimaryButtonClick,
             onSecondaryButtonClick,
-            primaryButtonEnabled,
+            scrollViewStyles,
+            enabled,
         } = this.props;
 
-        const { isAtBottom } = this.state;
+        const { isAtBottom, reachedBottom } = this.state;
 
-        const primaryButtonGradientColors = primaryButtonEnabled ? BUTTON_CONTINUE_GRADIENT : ['#8C959B', '#8C959B'] ;
+        let acceptButtonEnabled = enabled || reachedBottom;
 
         return (
             <View style={ Styles.root }>
                 <View style={ Styles.scrollContainer }>
                     <ScrollView
                         onScroll={ this.onScroll }
-                        style={ Styles.text }
+                        style={ scrollViewStyles }
                         onLayout={ this.onScrollViewLayout }>
                         { this.props.children }
                     </ScrollView>
@@ -81,9 +80,9 @@ export default class ScrollThrough extends Component {
                     </View>
                     <View style={ Styles.acceptButton }>
                         <X.Button
-                            color={ primaryButtonEnabled ? 'setupPrimary' : 'setupDefault'}
-                            onPress={ primaryButtonEnabled ? onPrimaryButtonClick : null }>
-                            { primaryButtonEnabled ? primaryButtonText : primaryButtonTextDisabled }
+                            color={ acceptButtonEnabled ? 'setupPrimary' : 'setupDefault' }
+                            onPress={ acceptButtonEnabled ? onPrimaryButtonClick : null }>
+                            { acceptButtonEnabled ? primaryButtonText : primaryButtonTextDisabled }
                         </X.Button>
                     </View>
                 </View>

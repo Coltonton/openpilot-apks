@@ -1,26 +1,35 @@
 import {
     ACTION_SIM_STATE_CHANGED,
-    ACTION_NAV_AVAILABILITY_CHANGED,
     ACTION_CONNECTION_STATUS_CHANGED,
     ACTION_THERMAL_DATA_CHANGED,
     ACTION_WIFI_STATE_CHANGED,
     ACTION_DEVICE_IDS_AVAILABLE,
     ACTION_DEVICE_REFRESHED,
     ACTION_HOST_IS_SSH_ENABLED,
+    ACTION_ACCOUNT_CHANGED,
+    ACTION_DEVICE_STATS_CHANGED,
+    ACTION_UPDATE_IS_AVAILABLE_CHANGED,
+    ACTION_LAST_ROUTE_NAME_CHANGED,
+    ACTION_IS_OFFROAD_CHANGED,
 } from './actions';
 import SimState from './SimState';
 
 const initialHostState = {
     simState: SimState.UNKNOWN,
-    isNavAvailable: false,
     isConnected: false,
     thermal: {},
     wifiState: {},
     imei: null,
     serial: null,
-    deviceJwt: null,
     device: null,
     isSshEnabled: false,
+    hasPrime: false,
+    account: {},
+    deviceStats: {},
+    updateIsAvailable: false,
+    updateReleaseNotes: "",
+    lastRouteName: "",
+    isOffroad: true,
 };
 
 export default (state = initialHostState, action) => {
@@ -29,11 +38,6 @@ export default (state = initialHostState, action) => {
             return {
                 ...state,
                 simState: action.simState,
-            }
-        case ACTION_NAV_AVAILABILITY_CHANGED:
-            return {
-                ...state,
-                isNavAvailable: action.isNavAvailable,
             }
         case ACTION_CONNECTION_STATUS_CHANGED:
             return {
@@ -55,7 +59,6 @@ export default (state = initialHostState, action) => {
                 ...state,
                 imei: action.imei,
                 serial: action.serial,
-                deviceJwt: action.deviceJwt,
             }
         case ACTION_DEVICE_REFRESHED:
             return {
@@ -66,6 +69,32 @@ export default (state = initialHostState, action) => {
             return {
                 ...state,
                 isSshEnabled: action.isSshEnabled,
+            }
+        case ACTION_ACCOUNT_CHANGED:
+            return {
+                ...state,
+                account: action.account,
+            }
+        case ACTION_DEVICE_STATS_CHANGED:
+            return {
+                ...state,
+                deviceStats: action.deviceStats,
+            }
+        case ACTION_UPDATE_IS_AVAILABLE_CHANGED:
+            return {
+                ...state,
+                updateIsAvailable: action.updateIsAvailable,
+                updateReleaseNotes: action.updateReleaseNotes,
+            }
+        case ACTION_LAST_ROUTE_NAME_CHANGED:
+            return {
+                ...state,
+                lastRouteName: action.payload.lastRouteName,
+            }
+        case ACTION_IS_OFFROAD_CHANGED:
+            return {
+                ...state,
+                isOffroad: action.payload.isOffroad,
             }
         default:
             return state;

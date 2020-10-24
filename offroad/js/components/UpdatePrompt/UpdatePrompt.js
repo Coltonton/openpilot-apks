@@ -1,15 +1,10 @@
 import React, { Component } from 'react';
 import { connect } from 'react-redux';
+import { NavigationActions } from 'react-navigation';
 
 import X from '../../themes';
 import ChffrPlus from '../../native/ChffrPlus';
 
-import {
-    dismissUpdatePrompt,
-    ACTION_UPDATE_CHECKED,
-} from '../../store/updater/actions';
-
-import SetupContainer from '../SetupContainer';
 import ScrollThrough from '../ScrollThrough';
 
 class UpdatePrompt extends Component {
@@ -18,40 +13,37 @@ class UpdatePrompt extends Component {
     };
 
     onUpdatePressed = () => {
-        this.props.onDismiss();
-        this.props.setUpdateAvailable(false);
-        ChffrPlus.doUpdate();
+        this.props.dismiss();
+        ChffrPlus.reboot();
     }
 
     render() {
         return (
-            <SetupContainer>
+            <X.Gradient
+                color='dark_blue'
+                style={ { padding: 26, paddingTop: 10 } }>
                 <ScrollThrough
                     onPrimaryButtonClick={ this.onUpdatePressed }
-                    onSecondaryButtonClick={ this.props.onDismiss }
+                    onSecondaryButtonClick={ this.props.dismiss }
                     primaryButtonText={ 'Reboot and Update' }
                     secondaryButtonText={ 'Later' }
-                    onScroll={ this.onScroll }>
+                    onScroll={ this.onScroll }
+                    enabled={ true }>
                     <X.Text color='white' size='big' weight='semibold'>Update Available</X.Text>
                     <X.Line />
                     <X.Text color='white'>
-                        { 'Please keep in mind that system behavior may change.\n\n' }
                         { this.props.releaseNotes }
                     </X.Text>
                 </ScrollThrough>
-            </SetupContainer>
+            </X.Gradient>
         )
     }
 }
 
-const mapStateToProps = (state) => ({
-    shouldShowUpdatePrompt: state.updater.shouldShowUpdatePrompt,
-    releaseNotes: state.updater.releaseNotes,
-});
-
 const mapDispatchToProps = (dispatch) => ({
-    onDismiss: () => dispatch(dismissUpdatePrompt()),
-    setUpdateAvailable: (isUpdateAvailable) => dispatch({ type: ACTION_UPDATE_CHECKED, isUpdateAvailable }),
+    dismiss: () => dispatch(NavigationActions.navigate({ routeName: 'Home' })),
 });
-
-export default connect(mapStateToProps, mapDispatchToProps)(UpdatePrompt);
+const stateToProps = (state) => ({
+    releaseNotes: state.host.updateReleaseNotes,
+});
+export default connect(stateToProps, mapDispatchToProps)(UpdatePrompt);

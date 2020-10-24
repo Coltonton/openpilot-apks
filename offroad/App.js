@@ -15,8 +15,6 @@ import RootReducer from './js/store';
 
 import StackNavigator from './js/navigators/StackNavigator';
 
-import UploadProgressTimer from './js/timers/UploadProgressTimer';
-import UpdateChecker from './js/timers/UpdateChecker';
 import HomeButtonListener from './js/utils/HomeButtonListener';
 import SimStateListener from './js/utils/SimStateListener';
 import DestinationListener from './js/utils/DestinationListener';
@@ -32,7 +30,6 @@ import { updateDate, updateLocation } from './js/store/environment/actions';
 import {
     updateSimState,
     updateWifiState,
-    updateNavAvailability,
     setDeviceIds,
     refreshDeviceInfo,
     updateSshEnabled,
@@ -40,11 +37,14 @@ import {
 import { Params } from './js/config';
 
 import ChffrPlus from './js/native/ChffrPlus';
-import { Sentry } from 'react-native-sentry';
+import * as Sentry from '@sentry/react-native';
+
+console.disableYellowBox = true;
 
 if (!__DEV__) {
-    const sentryDsn = Platform.select({"ios":"https://50043662792c42558b59f761be477b71:79b74f53eaae4b5494e2a3a12b307453@sentry.io/257901","android":"https://50043662792c42558b59f761be477b71:79b74f53eaae4b5494e2a3a12b307453@sentry.io/257901"});
-    Sentry.config(sentryDsn).install();
+    Sentry.init({
+        dsn: "https://50043662792c42558b59f761be477b71:79b74f53eaae4b5494e2a3a12b307453@sentry.io/257901"
+    });
 }
 
 function createBaseUiStore() {
@@ -69,37 +69,34 @@ export default class App extends Component {
     async onBeforeLift() {
         // Called after store is rehydrated from disk
         // TODO/NOTE: exceptions are swallowed in this block, can cause weird bugs during dev.
-
-        this.store.dispatch(setDeviceIds()).then(() => this.store.dispatch(refreshDeviceInfo()));
-        this.store.dispatch(resetToLaunch());
-        this.store.dispatch(updateDate());
-        this.store.dispatch(refreshParams());
-        this.store.dispatch(updateSshEnabled());
-        AppStateListener.register(this.store.dispatch);
-        UploadProgressTimer.start(this.store.dispatch);
-        UpdateChecker.start(this.store.dispatch);
-        HomeButtonListener.register(this.store.dispatch);
-        SimStateListener.register(this.store.dispatch);
-        DestinationListener.register(this.store.dispatch);
-        SettingsButtonListener.register(this.store.dispatch);
-        ThermalListener.register(this.store.dispatch);
-        WifiStateListener.register(this.store.dispatch);
-        GeocodeListener.register(this.store.dispatch);
+        try{
+            this.store.dispatch(setDeviceIds()).then(() => this.store.dispatch(refreshDeviceInfo()));
+            this.store.dispatch(resetToLaunch());
+            this.store.dispatch(updateDate());
+            this.store.dispatch(refreshParams());
+            this.store.dispatch(updateSshEnabled());
+            AppStateListener.register(this.store.dispatch);
+            HomeButtonListener.register(this.store.dispatch);
+            SimStateListener.register(this.store.dispatch);
+            SettingsButtonListener.register(this.store.dispatch);
+            ThermalListener.register(this.store.dispatch);
+            WifiStateListener.register(this.store.dispatch);
+            GeocodeListener.register(this.store.dispatch);
+        } catch(err) {
+            console.log('onBeforeLift', err);
+        }
     }
 
     componentDidMount() {
-        this.store.dispatch(updateNavAvailability());
         this.store.dispatch(updateSimState());
         this.store.dispatch(updateWifiState());
         StatusBar.setHidden(true);
     }
 
     componentWillUnmount() {
-        UploadProgressTimer.stop();
+        AppStateListener.unregister();
         HomeButtonListener.unregister();
         SimStateListener.unregister();
-        DestinationListener.unregister();
-        UpdateChecker.stop();
         SettingsButtonListener.unregister();
         ThermalListener.unregister();
         WifiStateListener.unregister();
